@@ -24,7 +24,7 @@ dependencies = [
     "sqlglot>=11.5.6",
     "dotenv",
     "openai",
-    "psycopg2",
+    "psycopg2-binary",
     "mysql-connector-python"
 ]
 

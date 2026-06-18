@@ -16,6 +16,7 @@ from .exceptions import ExerciseGenerationError, SQLParsingError
 from .query_executor import execute_query, validate_assignment
 from .assignments.dataset import strings as dataset_strings
 from .db import get_database, QueryExecutionError
+from .batching import build_profiles, group_errors
 
 import dav_tools
 from sql_error_taxonomy import SqlErrors
@@ -102,6 +103,7 @@ def _validate_and_fix_queries(
                 new_dataset = dataset.with_inserts(new_insert_commands)
 
                 # Verify against the real DBMS
+                all_pass = False
                 with get_database(db_host, db_port, db_user, db_password, sql_dialect) as db:
                     try:
                         db.execute(new_dataset.to_sql_no_context())
@@ -157,82 +159,30 @@ def _validate_and_fix_queries(
     return Assignment(dataset=dataset, exercises=exercises)
 
 
-def generate_assignment(
-        errors: list[tuple[SqlErrors, DifficultyLevel]],
+def _generate_batch(
+        requirements: list[tuple[SqlErrors, SqlErrorRequirements, DifficultyLevel]],
         db_host: str,
         db_port: int,
         db_user: str,
         db_password: str,
-        sql_dialect: str = 'postgres',
-        *,
-        language: str = 'en',
-        domain: str | None = None,
-        dataset_str: str | None = None,
-        shuffle_exercises: bool = False,
-        naming_func: Callable[[SqlErrors, DifficultyLevel], str] = lambda error, difficulty: f'{error.name} - {difficulty.name}',
-        max_dataset_attempts: int = 3,
-        max_exercise_attempts: int = 3,
-        max_unique_attempts: int = 3,
-        max_workers: int | None = None,
-        validate_queries: bool = True,
-        max_regeneration_attempts: int = 2,
+        sql_dialect: str,
+        language: str,
+        domain: str | None,
+        dataset_str: str | None,
+        naming_func: Callable[[SqlErrors, DifficultyLevel], str],
+        max_dataset_attempts: int,
+        max_exercise_attempts: int,
+        max_unique_attempts: int,
+        max_workers: int | None,
+        validate_queries: bool,
+        max_regeneration_attempts: int,
     ) -> Assignment:
-    '''
-    Generate SQL assignments based on the given SQL errors and their corresponding difficulty levels.
+    '''Generate a single assignment for one batch of compatible error requirements.'''
 
-    - Exercises are returned in the same order as the input `errors`.
-    - Logging happens as soon as possible (during generation), and each message uses the exercise title as its id.
-    - Deduplication is global across all generated exercises (thread-safe).
-
-    Args:
-        errors (list[tuple[SqlErrors, DifficultyLevel]]): A list of (error, difficulty) pairs.
-        sql_dialect (str): The SQL dialect to use for generating the dataset and exercises (e.g., 'postgres', 'mysql').
-        domain (str | None): The domain for the assignments. If None, a random domain will be selected.
-        language (str): The language for the assignment generation (e.g., 'en' for English).
-        dataset_str (str | None): Optional SQL string to use as the dataset. If provided, it will be used instead of generating a new dataset.
-        shuffle_exercises (bool): Whether to shuffle exercises to prevent ordering bias (shuffles input order).
-        naming_func (Callable[[SqlErrors, DifficultyLevel], str]): Generates exercise titles.
-        max_dataset_attempts (int): Maximum retries for generating a valid dataset before skipping.
-        max_exercise_attempts (int): Maximum retries for generating a valid exercise before skipping.
-        max_unique_attempts (int): Maximum retries to avoid duplicate solutions per (error, difficulty).
-        max_workers (int | None): Thread pool size. If None, uses ThreadPoolExecutor default.
-
-    Returns:
-        Assignment: The generated assignment (stable order).
-    '''
-    
-    # filter only supported errors
-    supported_errors: list[tuple[SqlErrors, DifficultyLevel]] = []
-    for error, difficulty in errors:
-        if error in ERROR_REQUIREMENTS_MAP:
-            supported_errors.append((error, difficulty))
-        else:
-            dav_tools.messages.warning(f'Skipping unsupported error: {error.name}')
-
-    if not supported_errors:
-        raise ValueError('No supported errors provided for assignment generation.')
-
-    if shuffle_exercises:
-        random.shuffle(errors)
-    
-
-    dav_tools.messages.info(f'Starting assignment generation for {len(supported_errors)} exercises (out of {len(errors)} requested)')
-
-    # convert SqlErrors -> SqlErrorRequirements, keeping difficulty levels
-    requirements: list[tuple[SqlErrors, SqlErrorRequirements, DifficultyLevel]] = [
-        (
-            error,
-            ERROR_REQUIREMENTS_MAP[error](language=language),
-            difficulty
-        )
-        for error, difficulty in supported_errors
-    ]
+    if domain is None:
+        domain = random_domain(language=language)
 
     if not dataset_str:
-        # No dataset string provided, so we need to generate a dataset based on the requirements of the exercises.
-        if domain is None:
-            domain = random_domain(language=language)
-
         dataset_requirements: list[SchemaConstraint] = []
         for _, req, difficulty in requirements:
             dataset_requirements.extend(req.dataset_constraints(difficulty))
@@ -241,8 +191,8 @@ def generate_assignment(
             req.dataset_extra_details().get(language=language)
             for _, req, _ in requirements
         ]
-        dataset_extra_details = [detail for detail in dataset_extra_details if detail.strip()]  # filter out empty details
-        dataset_extra_details = list(set(dataset_extra_details))  # deduplicate details
+        dataset_extra_details = [detail for detail in dataset_extra_details if detail.strip()]
+        dataset_extra_details = list(set(dataset_extra_details))
 
         dav_tools.messages.info(f'Generating dataset for domain: {domain}')
         dataset = Dataset.generate(
@@ -255,19 +205,17 @@ def generate_assignment(
             db_host=db_host,
             db_port=db_port,
             db_user=db_user,
-            db_password=db_password
+            db_password=db_password,
         )
-        dav_tools.messages.success(f'Dataset generated')
+        dav_tools.messages.success('Dataset generated')
     else:
         dataset = Dataset.from_sql(
             sql_str=dataset_str,
-            sql_dialect=sql_dialect
+            sql_dialect=sql_dialect,
         )
 
     generated_solutions_hashes: set[str] = set()
     hashes_lock = threading.Lock()
-
-    # Serialize log output to avoid interleaving (and to keep dav_tools usage thread-safe).
     log_lock = threading.Lock()
 
     def _worker(
@@ -275,10 +223,9 @@ def generate_assignment(
             error: SqlErrors,
             difficulty: DifficultyLevel,
             constraints: list[QueryConstraint],
-            extra_details: str
+            extra_details: str,
     ) -> tuple[int, Exercise | None]:
         title = naming_func(error, difficulty)
-
         dav_tools.messages.info(f'Starting generation for exercise: {title}')
 
         last_generated_exercise: Exercise | None = None
@@ -321,7 +268,7 @@ def generate_assignment(
 
             with log_lock:
                 dav_tools.messages.info(f'{title}: Successfully generated.')
-                
+
             return (idx, generated_exercise)
 
         if last_generated_exercise is not None:
@@ -329,8 +276,7 @@ def generate_assignment(
                 dav_tools.messages.error(f'{title}: Could not generate a UNIQUE exercise for {error.name} after {max_unique_attempts} retries. Skipping.')
         return (idx, None)
 
-    # Pre-allocate so we can preserve ordering no matter completion order.
-    ordered_results: list[Exercise | None] = [None] * len(supported_errors)
+    ordered_results: list[Exercise | None] = [None] * len(requirements)
 
     if max_workers == 1:
         for idx, (error, requirement, difficulty) in enumerate(requirements):
@@ -339,7 +285,7 @@ def generate_assignment(
                 error=error,
                 difficulty=difficulty,
                 constraints=requirement.exercise_constraints(difficulty),
-                extra_details=requirement.exercise_extra_details().get(language=language)
+                extra_details=requirement.exercise_extra_details().get(language=language),
             )
             ordered_results[i] = ex
     else:
@@ -351,7 +297,7 @@ def generate_assignment(
                     error=error,
                     difficulty=difficulty,
                     constraints=requirement.exercise_constraints(difficulty),
-                    extra_details=requirement.exercise_extra_details().get(language=language)
+                    extra_details=requirement.exercise_extra_details().get(language=language),
                 )
                 for idx, (error, requirement, difficulty) in enumerate(requirements)
             ]
@@ -361,17 +307,13 @@ def generate_assignment(
 
     exercises: list[Exercise] = [ex for ex in ordered_results if ex is not None]
 
-    if len(exercises) < len(supported_errors):
-        dav_tools.messages.warning(f'Finished generating exercises with some failures. Generated: {len(exercises)}. Unsupported: {len(errors) - len(supported_errors)}. Failed: {len(supported_errors) - len(exercises)}.')
+    if len(exercises) < len(requirements):
+        dav_tools.messages.warning(f'Finished generating exercises with some failures. Generated: {len(exercises)}. Failed: {len(requirements) - len(exercises)}.')
     else:
-        dav_tools.messages.success(f'Successfully generated all {len(exercises)} exercises. Unsupported: {len(errors) - len(supported_errors)}.')
+        dav_tools.messages.success(f'Successfully generated all {len(exercises)} exercises.')
 
-    assignment = Assignment(
-        dataset=dataset,
-        exercises=exercises
-    )
+    assignment = Assignment(dataset=dataset, exercises=exercises)
 
-    # Post-generation validation: execute queries and check for empty results
     if validate_queries and exercises:
         assignment = _validate_and_fix_queries(
             assignment=assignment,
@@ -385,3 +327,175 @@ def generate_assignment(
         )
 
     return assignment
+
+
+def generate_assignments(
+        errors: list[tuple[SqlErrors, DifficultyLevel]],
+        db_host: str,
+        db_port: int,
+        db_user: str,
+        db_password: str,
+        sql_dialect: str = 'postgres',
+        *,
+        language: str = 'en',
+        domain: str | None = None,
+        dataset_str: str | None = None,
+        shuffle_exercises: bool = False,
+        naming_func: Callable[[SqlErrors, DifficultyLevel], str] = lambda error, difficulty: f'{error.name} - {difficulty.name}',
+        max_dataset_attempts: int = 3,
+        max_exercise_attempts: int = 3,
+        max_unique_attempts: int = 3,
+        max_workers: int | None = None,
+        validate_queries: bool = True,
+        max_regeneration_attempts: int = 2,
+    ) -> list[Assignment]:
+    '''
+    Generate SQL assignments, automatically batching incompatible constraints
+    into separate datasets. Each Assignment has its own Dataset and exercises.
+
+    Returns one Assignment per compatible batch of errors.
+    '''
+    # filter only supported errors
+    supported_errors: list[tuple[SqlErrors, DifficultyLevel]] = []
+    for error, difficulty in errors:
+        if error in ERROR_REQUIREMENTS_MAP:
+            supported_errors.append((error, difficulty))
+        else:
+            dav_tools.messages.warning(f'Skipping unsupported error: {error.name}')
+
+    if not supported_errors:
+        raise ValueError('No supported errors provided for assignment generation.')
+
+    if shuffle_exercises:
+        random.shuffle(supported_errors)
+
+    dav_tools.messages.info(f'Starting assignment generation for {len(supported_errors)} exercises (out of {len(errors)} requested)')
+
+    # convert SqlErrors -> SqlErrorRequirements
+    requirements: list[tuple[SqlErrors, SqlErrorRequirements, DifficultyLevel]] = [
+        (error, ERROR_REQUIREMENTS_MAP[error](language=language), difficulty)
+        for error, difficulty in supported_errors
+    ]
+
+    # If a dataset_str is provided, all errors share it — no batching needed
+    if dataset_str:
+        return [_generate_batch(
+            requirements=requirements,
+            db_host=db_host, db_port=db_port, db_user=db_user, db_password=db_password,
+            sql_dialect=sql_dialect, language=language, domain=domain,
+            dataset_str=dataset_str, naming_func=naming_func,
+            max_dataset_attempts=max_dataset_attempts, max_exercise_attempts=max_exercise_attempts,
+            max_unique_attempts=max_unique_attempts, max_workers=max_workers,
+            validate_queries=validate_queries, max_regeneration_attempts=max_regeneration_attempts,
+        )]
+
+    # Build profiles and group into compatible batches
+    profiles = build_profiles(requirements)
+    batches = group_errors(profiles)
+
+    if len(batches) > 1:
+        dav_tools.messages.info(f'Detected incompatible constraints. Split into {len(batches)} batches.')
+
+    assignments: list[Assignment] = []
+    for batch_profiles in batches:
+        batch_requirements = [
+            (p.error, p.requirement, p.difficulty)
+            for p in batch_profiles
+        ]
+        assignment = _generate_batch(
+            requirements=batch_requirements,
+            db_host=db_host, db_port=db_port, db_user=db_user, db_password=db_password,
+            sql_dialect=sql_dialect, language=language, domain=domain,
+            dataset_str=None, naming_func=naming_func,
+            max_dataset_attempts=max_dataset_attempts, max_exercise_attempts=max_exercise_attempts,
+            max_unique_attempts=max_unique_attempts, max_workers=max_workers,
+            validate_queries=validate_queries, max_regeneration_attempts=max_regeneration_attempts,
+        )
+        assignments.append(assignment)
+
+    return assignments
+
+
+def generate_assignment(
+        errors: list[tuple[SqlErrors, DifficultyLevel]],
+        db_host: str,
+        db_port: int,
+        db_user: str,
+        db_password: str,
+        sql_dialect: str = 'postgres',
+        *,
+        language: str = 'en',
+        domain: str | None = None,
+        dataset_str: str | None = None,
+        shuffle_exercises: bool = False,
+        naming_func: Callable[[SqlErrors, DifficultyLevel], str] = lambda error, difficulty: f'{error.name} - {difficulty.name}',
+        max_dataset_attempts: int = 3,
+        max_exercise_attempts: int = 3,
+        max_unique_attempts: int = 3,
+        max_workers: int | None = None,
+        validate_queries: bool = True,
+        max_regeneration_attempts: int = 2,
+    ) -> Assignment:
+    '''
+    Generate a SQL assignment based on the given SQL errors and their corresponding difficulty levels.
+
+    Automatically batches incompatible constraints into separate datasets and merges the results.
+
+    Args:
+        errors (list[tuple[SqlErrors, DifficultyLevel]]): A list of (error, difficulty) pairs.
+        sql_dialect (str): The SQL dialect to use (e.g., 'postgres', 'mysql').
+        db_host (str): Database host.
+        db_port (int): Database port.
+        db_user (str): Database user.
+        db_password (str): Database password.
+        language (str): Language for generation (e.g., 'en', 'it').
+        domain (str | None): Domain for the dataset. If None, a random domain is selected.
+        dataset_str (str | None): Optional SQL string to use as the dataset instead of generating one.
+        shuffle_exercises (bool): Whether to shuffle exercises to prevent ordering bias.
+        naming_func (Callable): Generates exercise titles.
+        max_dataset_attempts (int): Maximum retries for dataset generation.
+        max_exercise_attempts (int): Maximum retries for exercise generation.
+        max_unique_attempts (int): Maximum retries to avoid duplicate solutions.
+        max_workers (int | None): Thread pool size.
+        validate_queries (bool): Whether to validate queries by execution.
+        max_regeneration_attempts (int): Maximum retries for data regeneration.
+
+    Returns:
+        Assignment: The generated assignment.
+    '''
+    assignments = generate_assignments(
+        errors=errors,
+        db_host=db_host, db_port=db_port, db_user=db_user, db_password=db_password,
+        sql_dialect=sql_dialect,
+        language=language, domain=domain, dataset_str=dataset_str,
+        shuffle_exercises=shuffle_exercises, naming_func=naming_func,
+        max_dataset_attempts=max_dataset_attempts, max_exercise_attempts=max_exercise_attempts,
+        max_unique_attempts=max_unique_attempts, max_workers=max_workers,
+        validate_queries=validate_queries, max_regeneration_attempts=max_regeneration_attempts,
+    )
+
+    if len(assignments) == 1:
+        return assignments[0]
+
+    # Multiple batches: merge into a single Assignment
+    dav_tools.messages.warning(
+        f'Incompatible constraints detected — generated {len(assignments)} separate datasets. '
+        f'Merging into a single assignment.'
+    )
+
+    all_create_commands: list[str] = []
+    all_insert_commands: list[str] = []
+    all_exercises: list[Exercise] = []
+
+    for assignment in assignments:
+        all_create_commands.extend(assignment.dataset.create_commands)
+        all_insert_commands.extend(assignment.dataset.insert_commands)
+        all_exercises.extend(assignment.exercises)
+
+    merged_dataset = Dataset(
+        create_commands=all_create_commands,
+        insert_commands=all_insert_commands,
+        domain=assignments[0].dataset.domain,
+    )
+
+    return Assignment(dataset=merged_dataset, exercises=all_exercises)
