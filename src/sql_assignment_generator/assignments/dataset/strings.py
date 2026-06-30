@@ -16,6 +16,33 @@ SET search_path TO {schema};
 COMMIT;'''
 
 
+def _detect_conflicts(constraints: Sequence[SchemaConstraint]) -> str:
+    '''Detect known conflicts between constraints and return guidance text (empty if none).'''
+
+    from ...constraints.schema.tables import MaxColumns, SameColumnNames
+
+    has_max_columns = any(isinstance(c, MaxColumns) for c in constraints)
+    same_col = next((c for c in constraints if isinstance(c, SameColumnNames)), None)
+
+    if has_max_columns and same_col is not None:
+        return TranslatableText(
+            '\nIMPORTANT CONSTRAINT CONFLICT ADVISORY:\n'
+            'You must satisfy BOTH "max columns per table" AND "shared non-key column names across tables". '
+            'These two constraints conflict if you try to satisfy the second one by ADDING columns. '
+            f'Instead, plan which {same_col.pairs}+ generic non-key column names (e.g. "name", "status", "description") '
+            'to REUSE across multiple tables, and design every table around that shared vocabulary from the start. '
+            'This keeps each table within its column limit while still creating shared column names.',
+            it='\nAVVISO DI CONFLITTO TRA CONSTRAINT:\n'
+            'Devi soddisfare SIA "massimo colonne per tabella" SIA "nomi di colonne non chiave condivisi tra tabelle". '
+            'Queste due constraint entrano in conflitto se tenti di soddisfare la seconda AGGIUNGENDO colonne. '
+            f'Piuttosto, pianifica quali {same_col.pairs}+ nomi generici di colonne non chiave (es. "name", "status", "description") '
+            'RIUTILIZZARE tra più tabelle, e progetta ogni tabella attorno a quel vocabolario condiviso fin dall\'inizio. '
+            'Questo mantiene ogni tabella entro il suo limite di colonne creando comunque nomi di colonna condivisi.'
+        )
+
+    return TranslatableText()
+
+
 def prompt_generate(
         domain: str,
         extra_details: list[str],
@@ -25,6 +52,7 @@ def prompt_generate(
         language: str
     ) -> str:
     formatted_constraints = '\n'.join(f'- {c.description.get(language)}' for c in constraints)
+    conflict_advisory = _detect_conflicts(constraints).get(language)
    
     # remove empty extra details        
     extra_details = [detail for detail in extra_details if detail.strip() != '']
@@ -69,7 +97,7 @@ INSERT INTO tableName(<all columns except SERIAL/AUTO_INCREMENT>) VALUES
 
 For each table, insert at least 5 rows of data. All rows for a table must be in a single INSERT statement.
 Skip any SERIAL/AUTO_INCREMENT columns in the INSERT statements.
-''',
+{conflict_advisory}''',
         it=f'''Genera un dataset SQL {sql_dialect} sul seguente dominio: "{domain}".
 {extra_details_str}
 
@@ -97,13 +125,41 @@ INSERT INTO tableName(<tutte le colonne tranne SERIAL/AUTO_INCREMENT>) VALUES
     (val_n, val_n+1, ...);
 
 Per ogni tabella, inserisci almeno 5 righe di dati. Tutte le righe di una tabella devono essere in un'unica istruzione INSERT.
-''',
+{conflict_advisory}''',
     ).get(language)
 
 def feedback_constraint_violations(errors: list[str], * , language: str) -> str:
+    joined_errors = ', '.join(errors)
+
+    # Detect the common conflict between MaxColumns and SameColumnNames.
+    # When both fail together, adding columns to fix SameColumnNames worsens MaxColumns,
+    # so the LLM must be told to REUSE existing names instead of adding new columns.
+    conflict_hint = ''
+    joined_lower = joined_errors.lower()
+    if ('exceeds the maximum allowed' in joined_lower or 'exceeds the maximum' in joined_lower) \
+            and ('non-key columns with the same name' in joined_lower or 'same name' in joined_lower):
+        conflict_hint = TranslatableText(
+            '\n\nCRITICAL - these two constraints CONFLICT:\n'
+            '1. Max columns per table\n'
+            '2. Shared non-key column names across tables\n'
+            'Do NOT add new columns to satisfy the shared-names requirement (this breaks the column limit).\n'
+            'Instead, RENAME existing non-key columns so that the SAME generic name is used across multiple tables '
+            '(e.g. reuse "name", "status", "description" in 2+ tables each). This satisfies both constraints at once.',
+            it='\n\nCRITICO - queste due constraint SONO IN CONFLITTO:\n'
+            '1. Massimo numero di colonne per tabella\n'
+            '2. Nomi di colonne non chiave condivisi tra tabelle\n'
+            'NON aggiungere nuove colonne per soddisfare il requisito dei nomi condivisi (questo rompe il limite di colonne).\n'
+            'Piuttosto, RINOMINA colonne non chiave esistenti in modo che lo STESSO nome generico sia usato in più tabelle '
+            '(es. riutilizza "name", "status", "description" in 2+ tabelle ciascuno). Questo soddisfa entrambe le constraint insieme.'
+        ).get(language)
+
     return TranslatableText(
-        f"The previous JSON output was rejected because the SQL violated these constraints: {', '.join(errors)}\n Regenerate the JSON correcting the SQL to satisfy all mandatory constraints.",
-        it=f"Il precedente output JSON è stato rifiutato perché il SQL ha violato queste constraint: {', '.join(errors)}\n Rigenera il JSON correggendo il SQL per soddisfare tutte le constraint obbligatorie."
+        f"The previous JSON output was rejected because the SQL violated these constraints: {joined_errors}\n"
+        f"Regenerate the JSON correcting the SQL to satisfy all mandatory constraints."
+        f"{conflict_hint}",
+        it=f"Il precedente output JSON è stato rifiutato perché il SQL ha violato queste constraint: {joined_errors}\n"
+        f"Rigenera il JSON correggendo il SQL per soddisfare tutte le constraint obbligatorie."
+        f"{conflict_hint}"
     ).get(language)
 
 

@@ -229,24 +229,46 @@ class SameColumnNames(SchemaConstraint):
 
         tables_with_same_col_names = sum(1 for count in name_counts.values() if count >= 2)
         if tables_with_same_col_names < self.pairs:
+            # Identify which column names already satisfy the requirement vs. which are close
+            already_shared = {name: count for name, count in name_counts.items() if count >= 2}
+            not_yet_shared = {name: count for name, count in name_counts.items() if count < 2}
+
             raise ConstraintValidationError(
                 TranslatableText(
                     f'Schema has {tables_with_same_col_names} pair(s) of non-key columns with the same name, '
-                    f'which is less than the required minimum of {self.pairs} pair(s).'
-                    f'Current column name counts: {name_counts}. Columns not counted are part of PKs/FKs.'
-                    f'Add more columns without key constraints that share the same names across different tables to meet the requirement.',
+                    f'which is less than the required minimum of {self.pairs} pair(s). '
+                    f'You need {self.pairs - tables_with_same_col_names} more. '
+                    f'Columns already shared across tables: {already_shared}. '
+                    f'Columns NOT yet shared (appear in only one table): {not_yet_shared}. '
+                    f'Columns not counted at all are part of PKs/FKs. '
+                    f'STRATEGY: Do NOT add new columns. Instead, REUSE existing non-key column names '
+                    f'(e.g. "name", "status", "description", "created_at") across multiple tables. '
+                    f'For example, if tables A and B each have a unique column "title" and "label", '
+                    f'rename them both to "name" so the name is shared. '
+                    f'This avoids exceeding any per-table column limits.',
                     it=f'Lo schema ha {tables_with_same_col_names} coppia/e di colonne non chiave con lo stesso nome, '
-                    f'che è meno del minimo richiesto di {self.pairs} coppia/e.'
-                    f'Conteggio corrente dei nomi delle colonne: {name_counts}. Le colonne non conteggiate fanno parte di PK/FK.'
-                    f'Aggiungi più colonne senza vincoli di chiave con gli stessi nomi in tabelle diverse per soddisfare il requisito.'
+                    f'che è meno del minimo richiesto di {self.pairs} coppia/e. '
+                    f'Ti servono altre {self.pairs - tables_with_same_col_names}. '
+                    f'Colonne già condivise tra tabelle: {already_shared}. '
+                    f'Colonne NON ancora condivise (presenti in una sola tabella): {not_yet_shared}. '
+                    f'Le colonne non conteggiate fanno parte di PK/FK. '
+                    f'STRATEGIA: NON aggiungere nuove colonne. Piuttosto, RIUSA nomi di colonne non chiave esistenti '
+                    f'(es. "name", "status", "description", "created_at") tra più tabelle. '
+                    f'Ad esempio, se le tabelle A e B hanno colonne univoche "titolo" e "etichetta", '
+                    f'rinominatele entrambe in "name" in modo che il nome sia condiviso. '
+                    f'Questo evita di superare i limiti di colonne per tabella.'
                 )
             )
     
     @property
     def description(self) -> TranslatableText:
         return TranslatableText(
-            f'In CREATE TABLE must have at least {self.pairs} pair(s) of non-key columns (either PKs or FKs) with the same name but different semantic meaning',
-            it=f'Nel CREATE TABLE deve avere almeno {self.pairs} coppia/e di colonne non chiave (PK o FK) con lo stesso nome ma significato semantico diverso'
+            f'At least {self.pairs} non-key column name(s) (columns that are NEITHER primary keys NOR foreign keys) must be shared across multiple tables with different semantic meanings, so that referencing the column without a table prefix is ambiguous. For example, a column named "status" present in both an "orders" table and a "payments" table. '
+            f'IMPORTANT: Achieve this by REUSING generic non-key column names (e.g. "name", "status", "description", "created_at") across tables, NOT by adding extra columns. '
+            f'Each such reused name counts as one shared pair. Plan ahead: decide which {self.pairs} (or more) generic names to reuse, then use those same names in 2+ tables each, keeping every table within its column limit.',
+            it=f'Almeno {self.pairs} nome/i di colonna non chiave (colonne che NON sono chiavi primarie né chiavi esterne) devono essere condivisi tra più tabelle con significati semantici diversi, in modo che il riferimento alla colonna senza un prefisso di tabella sia ambiguo. Ad esempio, una colonna denominata "status" presente sia in una tabella "ordini" sia in una tabella "pagamenti". '
+            f'IMPORTANTE: Ottieni questo risultato RIUTILIZZANDO nomi generici di colonne non chiave (es. "name", "status", "description", "created_at") tra le tabelle, NON aggiungendo colonne extra. '
+            f'Ogni nome riutilizzato conta come una coppia condivisa. Pianifica in anticipo: decidi quali {self.pairs} (o più) nomi generici riutilizzare, poi usa quegli stessi nomi in 2+ tabelle ciascuno, mantenendo ogni tabella entro il suo limite di colonne.'
         )
 
     def merge(self, other: SchemaConstraint) -> 'SameColumnNames':
