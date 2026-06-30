@@ -90,7 +90,7 @@ class TestValidateAssignment:
             request='Get all rows with val > 5',
             solutions=[query],
             difficulty=DifficultyLevel.EASY,
-            error=SqlErrors.OMITTING_CORRELATION_NAMES,
+            error=SqlErrors.SYN_1_OMITTING_CORRELATION_NAMES,
         )
         assignment = Assignment(dataset=dataset, exercises=[exercise])
 
@@ -118,7 +118,7 @@ class TestValidateAssignment:
             request='Get all rows with val > 100',
             solutions=[query],
             difficulty=DifficultyLevel.EASY,
-            error=SqlErrors.OMITTING_CORRELATION_NAMES,
+            error=SqlErrors.SYN_1_OMITTING_CORRELATION_NAMES,
         )
         assignment = Assignment(dataset=dataset, exercises=[exercise])
 
@@ -150,14 +150,14 @@ class TestValidateAssignment:
                 request='r1',
                 solutions=[q_ok],
                 difficulty=DifficultyLevel.EASY,
-                error=SqlErrors.OMITTING_CORRELATION_NAMES,
+                error=SqlErrors.SYN_1_OMITTING_CORRELATION_NAMES,
             ),
             Exercise(
                 title='Empty',
                 request='r2',
                 solutions=[q_empty],
                 difficulty=DifficultyLevel.EASY,
-                error=SqlErrors.OMITTING_CORRELATION_NAMES,
+                error=SqlErrors.SYN_1_OMITTING_CORRELATION_NAMES,
             ),
         ]
         assignment = Assignment(dataset=dataset, exercises=exercises)
@@ -187,7 +187,7 @@ class TestValidateAssignment:
             request='r',
             solutions=[query],
             difficulty=DifficultyLevel.EASY,
-            error=SqlErrors.OMITTING_CORRELATION_NAMES,
+            error=SqlErrors.SYN_1_OMITTING_CORRELATION_NAMES,
         )
         assignment = Assignment(dataset=dataset, exercises=[exercise])
 

@@ -32,29 +32,29 @@ def _make_profile(error: SqlErrors, difficulty: DifficultyLevel = DifficultyLeve
 class TestDetailTagRegistry:
 
     def test_err_010_has_inconsistent_naming(self):
-        assert DetailTag.INCONSISTENT_NAMING in ERROR_DETAIL_TAGS[SqlErrors.SYNONYMS]
+        assert DetailTag.INCONSISTENT_NAMING in ERROR_DETAIL_TAGS[SqlErrors.SYN_10_SYNONYMS]
 
     def test_err_004_has_complex_names(self):
-        assert DetailTag.COMPLEX_NAMES in ERROR_DETAIL_TAGS[SqlErrors.UNDEFINED_COLUMN]
+        assert DetailTag.COMPLEX_NAMES in ERROR_DETAIL_TAGS[SqlErrors.SYN_4_UNDEFINED_COLUMN]
 
     def test_err_007_has_complex_names(self):
-        assert DetailTag.COMPLEX_NAMES in ERROR_DETAIL_TAGS[SqlErrors.UNDEFINED_OBJECT]
+        assert DetailTag.COMPLEX_NAMES in ERROR_DETAIL_TAGS[SqlErrors.SYN_7_UNDEFINED_OBJECT]
 
     def test_err_009_has_complex_names(self):
-        assert DetailTag.COMPLEX_NAMES in ERROR_DETAIL_TAGS[SqlErrors.MISSPELLINGS]
+        assert DetailTag.COMPLEX_NAMES in ERROR_DETAIL_TAGS[SqlErrors.SYN_9_MISSPELLINGS]
 
     def test_err_021_requires_null(self):
-        assert DetailTag.REQUIRES_NULL in ERROR_DETAIL_TAGS[SqlErrors.COMPARISON_WITH_NULL]
+        assert DetailTag.REQUIRES_NULL in ERROR_DETAIL_TAGS[SqlErrors.SYN_21_COMPARISON_WITH_NULL]
 
     def test_err_072_requires_duplicates(self):
-        assert DetailTag.REQUIRES_DUPLICATES in ERROR_DETAIL_TAGS[SqlErrors.MISSING_DISTINCT_FROM_SELECT]
+        assert DetailTag.REQUIRES_DUPLICATES in ERROR_DETAIL_TAGS[SqlErrors.LOG_72_MISSING_DISTINCT_FROM_SELECT]
 
     def test_err_095_requires_duplicate_groupby(self):
-        assert DetailTag.REQUIRES_DUPLICATE_GROUPBY in ERROR_DETAIL_TAGS[SqlErrors.GROUP_BY_WITH_SINGLETON_GROUPS]
+        assert DetailTag.REQUIRES_DUPLICATE_GROUPBY in ERROR_DETAIL_TAGS[SqlErrors.COM_95_GROUP_BY_WITH_SINGLETON_GROUPS]
 
     def test_unlisted_error_has_no_tags(self):
         # err_002 is not in the registry
-        assert SqlErrors.AMBIGUOUS_COLUMN not in ERROR_DETAIL_TAGS
+        assert SqlErrors.SYN_2_AMBIGUOUS_COLUMN not in ERROR_DETAIL_TAGS
 
 
 # =================================================================
@@ -64,22 +64,22 @@ class TestDetailTagRegistry:
 class TestAreCompatible:
 
     def test_inconsistent_naming_vs_complex_names(self):
-        p1 = ErrorProfile(error=SqlErrors.SYNONYMS, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.INCONSISTENT_NAMING})
-        p2 = ErrorProfile(error=SqlErrors.UNDEFINED_COLUMN, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.COMPLEX_NAMES})
+        p1 = ErrorProfile(error=SqlErrors.SYN_10_SYNONYMS, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.INCONSISTENT_NAMING})
+        p2 = ErrorProfile(error=SqlErrors.SYN_4_UNDEFINED_COLUMN, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.COMPLEX_NAMES})
         assert not are_compatible([p1, p2])
 
     def test_compatible_errors_no_tags(self):
-        p1 = ErrorProfile(error=SqlErrors.AMBIGUOUS_COLUMN, difficulty=DifficultyLevel.EASY, requirement=None, tags=set())
-        p2 = ErrorProfile(error=SqlErrors.OMITTING_CORRELATION_NAMES, difficulty=DifficultyLevel.EASY, requirement=None, tags=set())
+        p1 = ErrorProfile(error=SqlErrors.SYN_2_AMBIGUOUS_COLUMN, difficulty=DifficultyLevel.EASY, requirement=None, tags=set())
+        p2 = ErrorProfile(error=SqlErrors.SYN_1_OMITTING_CORRELATION_NAMES, difficulty=DifficultyLevel.EASY, requirement=None, tags=set())
         assert are_compatible([p1, p2])
 
     def test_compatible_duplicate_errors(self):
-        p1 = ErrorProfile(error=SqlErrors.MISSING_DISTINCT_FROM_SELECT, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.REQUIRES_DUPLICATES})
-        p2 = ErrorProfile(error=SqlErrors.DISTINCT_AS_FUNCTION_PARAMETER_WHERE_NOT_APPLICABLE, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.REQUIRES_DUPLICATES})
+        p1 = ErrorProfile(error=SqlErrors.LOG_72_MISSING_DISTINCT_FROM_SELECT, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.REQUIRES_DUPLICATES})
+        p2 = ErrorProfile(error=SqlErrors.LOG_78_DISTINCT_AS_FUNCTION_PARAMETER_WHERE_NOT_APPLICABLE, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.REQUIRES_DUPLICATES})
         assert are_compatible([p1, p2])
 
     def test_single_profile_always_compatible(self):
-        p = ErrorProfile(error=SqlErrors.SYNONYMS, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.INCONSISTENT_NAMING})
+        p = ErrorProfile(error=SqlErrors.SYN_10_SYNONYMS, difficulty=DifficultyLevel.EASY, requirement=None, tags={DetailTag.INCONSISTENT_NAMING})
         assert are_compatible([p])
 
     def test_empty_list_compatible(self):
@@ -104,35 +104,35 @@ class TestAreCompatible:
 class TestGroupErrors:
 
     def test_incompatible_split_into_two_batches(self):
-        p1 = _make_profile(SqlErrors.SYNONYMS)  # INCONSISTENT_NAMING
-        p2 = _make_profile(SqlErrors.UNDEFINED_COLUMN)  # COMPLEX_NAMES
+        p1 = _make_profile(SqlErrors.SYN_10_SYNONYMS)  # INCONSISTENT_NAMING
+        p2 = _make_profile(SqlErrors.SYN_4_UNDEFINED_COLUMN)  # COMPLEX_NAMES
         batches = group_errors([p1, p2])
         assert len(batches) == 2
         assert len(batches[0]) == 1
         assert len(batches[1]) == 1
 
     def test_compatible_stay_in_one_batch(self):
-        p1 = _make_profile(SqlErrors.MISSING_DISTINCT_FROM_SELECT)  # REQUIRES_DUPLICATES
-        p2 = _make_profile(SqlErrors.DISTINCT_AS_FUNCTION_PARAMETER_WHERE_NOT_APPLICABLE)  # REQUIRES_DUPLICATES
+        p1 = _make_profile(SqlErrors.LOG_72_MISSING_DISTINCT_FROM_SELECT)  # REQUIRES_DUPLICATES
+        p2 = _make_profile(SqlErrors.LOG_78_DISTINCT_AS_FUNCTION_PARAMETER_WHERE_NOT_APPLICABLE)  # REQUIRES_DUPLICATES
         batches = group_errors([p1, p2])
         assert len(batches) == 1
         assert len(batches[0]) == 2
 
     def test_mixed_compatible_and_incompatible(self):
-        p1 = _make_profile(SqlErrors.SYNONYMS)  # INCONSISTENT_NAMING
-        p2 = _make_profile(SqlErrors.UNDEFINED_COLUMN)  # COMPLEX_NAMES
-        p3 = _make_profile(SqlErrors.AMBIGUOUS_COLUMN)  # no tags
+        p1 = _make_profile(SqlErrors.SYN_10_SYNONYMS)  # INCONSISTENT_NAMING
+        p2 = _make_profile(SqlErrors.SYN_4_UNDEFINED_COLUMN)  # COMPLEX_NAMES
+        p3 = _make_profile(SqlErrors.SYN_2_AMBIGUOUS_COLUMN)  # no tags
         batches = group_errors([p1, p2, p3])
         # p1 and p3 are compatible, p2 conflicts with p1
         # Greedy: p1 starts batch1, p2 can't join → new batch2, p3 can join batch1
         assert len(batches) == 2
         errors_batch1 = [p.error for p in batches[0]]
-        assert SqlErrors.SYNONYMS in errors_batch1
-        assert SqlErrors.AMBIGUOUS_COLUMN in errors_batch1
-        assert batches[1][0].error == SqlErrors.UNDEFINED_COLUMN
+        assert SqlErrors.SYN_10_SYNONYMS in errors_batch1
+        assert SqlErrors.SYN_2_AMBIGUOUS_COLUMN in errors_batch1
+        assert batches[1][0].error == SqlErrors.SYN_4_UNDEFINED_COLUMN
 
     def test_single_error_one_batch(self):
-        p = _make_profile(SqlErrors.AMBIGUOUS_COLUMN)
+        p = _make_profile(SqlErrors.SYN_2_AMBIGUOUS_COLUMN)
         batches = group_errors([p])
         assert len(batches) == 1
         assert len(batches[0]) == 1
@@ -142,7 +142,7 @@ class TestGroupErrors:
         assert len(batches) == 0
 
     def test_preserves_input_order(self):
-        errors = [SqlErrors.AMBIGUOUS_COLUMN, SqlErrors.MISSING_DISTINCT_FROM_SELECT]
+        errors = [SqlErrors.SYN_2_AMBIGUOUS_COLUMN, SqlErrors.LOG_72_MISSING_DISTINCT_FROM_SELECT]
         profiles = [_make_profile(e) for e in errors]
         batches = group_errors(profiles)
         batch_errors = [p.error for p in batches[0]]
@@ -156,19 +156,19 @@ class TestGroupErrors:
 class TestBuildProfiles:
 
     def test_builds_correct_profiles(self):
-        req_class = ERROR_REQUIREMENTS_MAP[SqlErrors.SYNONYMS]
+        req_class = ERROR_REQUIREMENTS_MAP[SqlErrors.SYN_10_SYNONYMS]
         requirements = [
-            (SqlErrors.SYNONYMS, req_class(language='en'), DifficultyLevel.EASY),
+            (SqlErrors.SYN_10_SYNONYMS, req_class(language='en'), DifficultyLevel.EASY),
         ]
         profiles = build_profiles(requirements)
         assert len(profiles) == 1
-        assert profiles[0].error == SqlErrors.SYNONYMS
+        assert profiles[0].error == SqlErrors.SYN_10_SYNONYMS
         assert DetailTag.INCONSISTENT_NAMING in profiles[0].tags
 
     def test_unlisted_error_gets_empty_tags(self):
-        req_class = ERROR_REQUIREMENTS_MAP[SqlErrors.AMBIGUOUS_COLUMN]
+        req_class = ERROR_REQUIREMENTS_MAP[SqlErrors.SYN_2_AMBIGUOUS_COLUMN]
         requirements = [
-            (SqlErrors.AMBIGUOUS_COLUMN, req_class(language='en'), DifficultyLevel.EASY),
+            (SqlErrors.SYN_2_AMBIGUOUS_COLUMN, req_class(language='en'), DifficultyLevel.EASY),
         ]
         profiles = build_profiles(requirements)
         assert len(profiles) == 1
